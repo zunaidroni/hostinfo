@@ -2,6 +2,22 @@
 
 A Python port of the hostinfo test application.
 
+## Run and test
+
+The server entry point is `hostinfo_server.py`. Start it on the default port
+9898, or pass a different port as an argument:
+
+```sh
+python3 hostinfo_server.py
+python3 hostinfo_server.py 8080
+```
+
+Run the offline unit tests from this directory with:
+
+```sh
+python3 -m unittest discover -v
+```
+
 
 ## Build Instructions
 

@@ -1,0 +1,203 @@
+name: Host Info AI
+
+on:
+  push:
+    paths:
+      - "python/**"
+      - ".github/workflows/hostinfo-ai.yml"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  security-events: write
+
+jobs:
+  check-ai-key:
+    name: Check optional AI secret
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.check.outputs.available }}
+    steps:
+      - name: Check whether OPENAI_API_KEY is configured
+        id: check
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -n "$OPENAI_API_KEY" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "OPENAI_API_KEY is not configured; optional AI review jobs will be skipped."
+          fi
+
+  build-test:
+    name: Build and test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip coverage
+
+      - name: Verify code builds
+        run: python -m py_compile python/hostinfo_server.py python/test_hostinfo.py
+
+      - name: Run unit tests with coverage
+        working-directory: python
+        run: |
+          coverage run --source=hostinfo_server -m unittest discover -v
+          coverage report -m
+
+  lint:
+    name: Lint (${{ matrix.linter }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        linter: [flake8, pylint, ruff, mypy]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: advanced-security/python-lint-code-scanning-action@v1
+        with:
+          linter: ${{ matrix.linter }}
+
+  security-scan:
+    name: Python security scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run PyCharm Security
+        uses: tonybaloney/pycharm-security@master
+        with:
+          path: python/
+
+      - name: Run Bandit security scan
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Bandit
+        run: python -m pip install --upgrade bandit
+
+      - name: Scan Python source
+        # Binding to 0.0.0.0 is intentional for the containerized service.
+        run: bandit -r python/hostinfo_server.py -s B104
+
+  docker:
+    name: Build and scan container
+    needs: [build-test, security-scan]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./python
+          load: true
+          push: false
+          tags: student/hostinfo:latest
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: student/hostinfo:latest
+          format: table
+          exit-code: "0"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+
+  ai-test-quality:
+    name: AI test quality analysis
+    if: github.event_name == 'pull_request' && needs.check-ai-key.outputs.available == 'true'
+    needs: [check-ai-key, build-test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Analyze Test Quality
+        uses: Aetherr-Agency/DeepDive@v1
+        with:
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+  ai-lint-feedback:
+    name: AI lint feedback
+    if: github.event_name == 'pull_request' && needs.check-ai-key.outputs.available == 'true'
+    needs: [check-ai-key, lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: AI Lint Feedback
+        uses: anc95/ChatGPT-CodeReview@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+  ai-security-review:
+    name: AI security risk summary
+    if: github.event_name == 'pull_request' && needs.check-ai-key.outputs.available == 'true'
+    needs: [check-ai-key, security-scan]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: AI Security Risk Summary
+        uses: anc95/ChatGPT-CodeReview@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+  ai-container-review:
+    name: AI container review
+    if: github.event_name == 'pull_request' && needs.check-ai-key.outputs.available == 'true'
+    needs: [check-ai-key, docker]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: AI Container Review
+        uses: anc95/ChatGPT-CodeReview@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+  ai-code-review:
+    name: AI pull request review
+    if: github.event_name == 'pull_request' && needs.check-ai-key.outputs.available == 'true'
+    needs: [check-ai-key]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: anc95/ChatGPT-CodeReview@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+  ai-summary:
+    name: AI workflow summary
+    if: always() && github.event_name == 'pull_request' && needs.check-ai-key.outputs.available == 'true'
+    needs: [check-ai-key, build-test, lint, security-scan, docker]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: AI Workflow Summary
+        uses: anc95/ChatGPT-CodeReview@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

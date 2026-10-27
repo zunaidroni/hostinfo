@@ -11,6 +11,8 @@ temp/
 *#
 *.bak
 *.swp
+__pycache__/
+*.py[cod]
 *.eot
 *.ttf
 *.woff
