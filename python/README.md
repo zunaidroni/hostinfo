@@ -18,6 +18,8 @@ Run the offline unit tests from this directory with:
 python3 -m unittest discover -v
 ```
 
+The CI workflow runs these tests on pushes and pull requests that include Python changes.
+
 
 ## Build Instructions
 
